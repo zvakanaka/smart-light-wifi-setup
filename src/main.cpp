@@ -23,6 +23,7 @@
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
 
 // #define BLINK
+#define RESET_WIFI_PIN 16
 
 int SERVO_PIN = 14;
 Servo servo;  // create servo object to control a servo
@@ -32,6 +33,7 @@ int SERVO_MIN = 25;   // 0 is the absolute low limit
 int SERVO_MIDDLE = int(SERVO_MAX + SERVO_MIN) / 2;
 int SERVO_DELAY = 500;
 
+void checkResetSpiffsAndWifi();
 void startMqtt();
 void checkMqtt();
 int splitTopic(char* topic, char* tokens[], int tokensNumber);
@@ -44,8 +46,10 @@ bool mqttReady = false;
 
 // Variable to store the HTTP request
 String header;
-// Auxiliar variables to store the current output state
-String outputState = "off";
+
+int webServoMax = SERVO_MAX;
+int webServoMin = SERVO_MIN;
+
 char mqtt_server[20] = "smartnest.cz\0";
 char mqtt_port[11] = "1883\0";
 char mqtt_username[20] = "\0";
@@ -62,14 +66,13 @@ void saveConfigCallback() {
 }
 
 void setup() {
+  pinMode(RESET_WIFI_PIN, INPUT_PULLUP);
+
   Serial.begin(9600);
 
 #ifdef BLINK
   pinMode(LED_BUILTIN, OUTPUT);
 #endif
-
-  // clean FS, for testing
-  // SPIFFS.format();
 
   servo.attach(SERVO_PIN); // attaches the servo on GPIO2 (D4 on a NodeMCU board) to the servo object
   servo.write(SERVO_MIDDLE); // tell servo to go to degree
@@ -101,8 +104,18 @@ void setup() {
           strcpy(mqtt_username, json["mqtt_username"]);
           strcpy(mqtt_password, json["mqtt_password"]);
           strcpy(mqtt_client, json["mqtt_client"]);
+          if (json.containsKey("servo_max") && strlen(json["servo_max"]) > 0) {
+            webServoMax = atoi(json["servo_max"]);
+          }
+          if (json.containsKey("servo_min") && strlen(json["servo_min"]) > 0) {
+            webServoMin = atoi(json["servo_min"]);
+          }
 
-          mqttReady = true;
+          if (strlen(mqtt_client) == 0) {
+            Serial.println("MQTT not set up - Serving servo test page...");
+          } else {
+            mqttReady = true;
+          }
         } else {
           Serial.println("failed to load json config");
         }
@@ -141,9 +154,6 @@ void setup() {
   wifiManager.addParameter(&custom_mqtt_username);
   wifiManager.addParameter(&custom_mqtt_password);
   wifiManager.addParameter(&custom_mqtt_client);
-
-  // Uncomment and run it once, if you want to erase all the stored information
-  // wifiManager.resetSettings();
 
   // set minimu quality of signal so it ignores AP's under that quality
   // defaults to 8%
@@ -221,6 +231,57 @@ void loop() {
             webClient.println("Connection: close");
             webClient.println();
 
+            // test servo
+            if (header.indexOf("GET /output/on/") >= 0) {
+              String saughtHeaderChunk = "GET /output/on/";
+              Serial.println(saughtHeaderChunk.length());
+              String value = header.substring(saughtHeaderChunk.length());
+              Serial.print("Testing servo on: ");
+              Serial.println(value);
+              servo.write(value.toInt());  // tell servo to go to degree
+              delay(SERVO_DELAY);      // waits n ms for the servo to reach the position
+              servo.write(SERVO_MIDDLE);  // tell servo to go to degree
+              delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+
+              webServoMax = value.toInt();
+            } else if (header.indexOf("GET /output/off") >= 0) {
+              String saughtHeaderChunk = "GET /output/off/";
+              Serial.println(saughtHeaderChunk.length());
+              String value = header.substring(saughtHeaderChunk.length());
+              Serial.print("Testing servo off: ");
+              Serial.println(value);
+              servo.write(value.toInt());  // tell servo to go to degree
+              delay(SERVO_DELAY);      // waits n ms for the servo to reach the position
+              servo.write(SERVO_MIDDLE);  // tell servo to go to degree
+              delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+
+              webServoMin = value.toInt();
+            } else if (header.indexOf("GET /output/save") >= 0) {
+                // save the custom parameters to FS
+                Serial.println("saving config");
+                DynamicJsonBuffer jsonBuffer;
+                JsonObject& json = jsonBuffer.createObject();
+                json["mqtt_server"] = mqtt_server;
+                json["mqtt_port"] = mqtt_port;
+                json["mqtt_username"] = mqtt_username;
+                json["mqtt_password"] =
+                    mqtt_password;                  // Password from Smartnest (or API key)
+                json["mqtt_client"] = mqtt_client;  // Device Id from smartnest
+                
+                json["servo_max"] = webServoMax;
+                json["servo_min"] = webServoMin;
+
+                File configFile = SPIFFS.open("/config.json", "w");
+                if (!configFile) {
+                  Serial.println("failed to open config file for writing");
+                }
+
+                json.printTo(Serial);
+                json.printTo(configFile);
+                configFile.close();
+                // end save
+            }
+
             // Display the HTML web page
             webClient.println("<!DOCTYPE html><html>");
             webClient.println(
@@ -240,23 +301,29 @@ void loop() {
                 "text-decoration: none; font-size: 30px; margin: 2px; cursor: "
                 "pointer;}");
             webClient.println(
+                ".button3 {background-color: red;} "
                 ".button2 {background-color: #77878A;}</style></head>");
 
             // Web Page Heading
-            webClient.println("<body><h1>ESP8266 Web Server</h1>");
+            webClient.println("<body><h1>Light Switch Servo Adjustment</h1>");
 
-            // Display current state, and ON/OFF buttons for the defined GPIO
-            webClient.println("<p>Output - State " + outputState + "</p>");
-            // If the outputState is off, it displays the ON button
-            if (outputState == "off") {
+            webClient.print(
+              "<p><br><label for='servo-max'>Servo Max</label><br><input type='number' name='servo-max' value='");
+              webClient.print(webServoMax);
+              webClient.print(
+                "'><br><br>"
+                "<button "
+                "class=\"button\"  onclick='window.location.href = `/output/on/${document.querySelector(\"[name=\\\"servo-max\\\"]\").value}`'>ON</button></p>"
+              "<p><br><label for='servo-min'>Servo Min</label><br><input type='number' name='servo-min' value='");
+              webClient.print(webServoMin);
               webClient.println(
-                  "<p><a href=\"/output/on\"><button "
-                  "class=\"button\">ON</button></a></p>");
-            } else {
+                "'><br><br>"
+                "<button class=\"button "
+                "button2\" onclick='window.location.href = `/output/off/${document.querySelector(\"[name=\\\"servo-min\\\"]\").value}`'>OFF</button></p>");
               webClient.println(
-                  "<p><a href=\"/output/off\"><button class=\"button "
-                  "button2\">OFF</button></a></p>");
-            }
+                "<p><br><br>"
+                "<button class=\"button "
+                "button3\" onclick='window.location.href = `/output/save`'>SAVE</button></p>");
             webClient.println("</body></html>");
 
             // The HTTP response ends with another blank line
@@ -284,6 +351,8 @@ void loop() {
     client.loop();
     checkMqtt();
   }
+
+  checkResetSpiffsAndWifi();
 }
 
 void startMqtt() {
@@ -310,7 +379,11 @@ void startMqtt() {
         Serial.print(client.state());
       }
 
-      delay(0x7530);
+      // check to see if button held down and reset SPIFFS, otherwise retry connecting to MQTT in 30 seconds
+      for (int i = 0; i < 300; i++) {
+        checkResetSpiffsAndWifi();
+        delay(100);
+      }
     }
   }
 
@@ -321,6 +394,20 @@ void startMqtt() {
   sprintf(topic, "%s/report/online", mqtt_client);
   client.publish(topic, "true");
   delay(200);
+}
+
+void checkResetSpiffsAndWifi() {
+  if (digitalRead(RESET_WIFI_PIN) == LOW) {
+    Serial.println("Reseting SPIFFS...");
+    // clean FS, for testing
+    SPIFFS.format();
+
+    WiFiManager wifiManager;
+    wifiManager.resetSettings();
+
+    Serial.println("Restarting board..");
+    ESP.restart();
+  }
 }
 
 int splitTopic(char* topic, char* tokens[], int tokensNumber) {
@@ -368,7 +455,6 @@ void callback(char* topic, byte* payload,
 #ifdef BLINK
       digitalWrite(LED_BUILTIN, LOW);  // blink the light on the ESP8266 board
 #endif
-      // for testing first
       servo.write(SERVO_MAX);  // tell servo to go to degree
       delay(SERVO_DELAY);      // waits n ms for the servo to reach the position
       servo.write(SERVO_MIDDLE);  // tell servo to go to degree

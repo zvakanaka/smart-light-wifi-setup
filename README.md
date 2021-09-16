@@ -1,5 +1,5 @@
-# smart-light-wifi-setup
-Configurable MQTT light using ESP8266 board and SG90 servo.
+# Smart Light Switch Flipper (with WiFi setup)
+Configurable MQTT light switch flipper using ESP8266 board and SG90 servo.
 
 ## Customizable Settings (through web portal)
 - MQTT Server/Broker (https://smartnest.cz is a free/easy one)
@@ -7,6 +7,15 @@ Configurable MQTT light using ESP8266 board and SG90 servo.
 - MQTT Username
 - MQTT Password
 - MQTT Port
+
+## Other Customizable Settings (through web server)
+> NOTE: This is in beta and requires:
+> 1) MQTT client (during the web portal step) to be left blank
+> 2) Valid WiFi to be set up during the web portal step
+
+Navigate to the IP address of the ESP8266 in a web browser to test and save these settings:
+- Servo Max (the degree that the servo goes up to when turning light switch on)
+- Servo Min (the degree the servo goes down to when turning light switch off)
 
 ## Instructions
 1) Set up [PlatformIO](https://platformio.org/platformio-ide)
