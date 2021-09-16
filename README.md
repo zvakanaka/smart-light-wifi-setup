@@ -17,9 +17,12 @@ Navigate to the IP address of the ESP8266 in a web browser to test and save thes
 - Servo Max (the degree that the servo goes up to when turning light switch on)
 - Servo Min (the degree the servo goes down to when turning light switch off)
 
+> NOTE: You can find your IP address from another computer on same network using:  
+> `$ nmap -sn 192.168.1.0/24 | grep -i esp`
+
 ## Instructions
 1) Set up [PlatformIO](https://platformio.org/platformio-ide)
-2) `git clone https://github.com/zvakanaka/smart-light-wifi-setup; cd smart-light-wifi-setup; code .`
+2) `$ git clone https://github.com/zvakanaka/smart-light-wifi-setup; cd smart-light-wifi-setup; code .`
 3) PlatformIO Home -> Import Arduino Project -> Select Board 'WeMos D1 mini Lite (WEMOS) -> find project -> Import
 4) `ctrl/cmd+shift+p` -> `Switch Project Environment` -> smart-light-wifi-setup
 5) Build & Upload (`ctrl/cmd+shift+u`)
@@ -31,6 +34,9 @@ Navigate to the IP address of the ESP8266 in a web browser to test and save thes
 8) Use phone to connect to portal's WiFi (temporary WiFi access point that starts if setup hasn't run/WiFi can't connect)
 9) Enter MQTT credentials into portal
 10) Save and reboot
+
+## Reset All Settings
+Hold pin 16 (D0 on the D1 Mini Lite) to clear WiFi credentials and ALL settings (MQTT and servo max/min). 
 
 Problem? [File an issue](https://github.com/zvakanaka/smart-light-wifi-setup/issues/new)
 
