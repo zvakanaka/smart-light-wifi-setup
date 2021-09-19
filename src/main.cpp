@@ -1,20 +1,21 @@
 /**
  * I could not have done this without the help of:
- * 
+ *
  * Rui Santos
  * https://randomnerdtutorials.com/wifimanager-with-esp8266-autoconnect-custom-parameter-and-manage-your-ssid-and-password/
- * 
+ *
  * Andres Sosa (aososam)
  * https://github.com/aososam/Smartnest/blob/master/Devices/light/light.ino
- * 
+ *
  * As well as the numerous open source libraries and projects on the internet.
- * 
+ *
  * Thank you.
  * */
 
 #include <Arduino.h>
 #include <ArduinoJson.h>  // https://github.com/bblanchon/ArduinoJson
 #include <DNSServer.h>
+#include <DoubleResetDetector.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <FS.h>  // this needs to be first, or it all crashes and burns...
@@ -23,7 +24,12 @@
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
 
 // #define BLINK
-#define RESET_WIFI_PIN 16
+#define BLINK_IP_ADDRESS
+// Number of seconds after reset during which a
+// subseqent reset will be considered a double reset.
+#define DRD_TIMEOUT 10
+// RTC Memory Address for the DoubleResetDetector to use
+#define DRD_ADDRESS 0
 
 int SERVO_PIN = 14;
 Servo servo;  // create servo object to control a servo
@@ -33,16 +39,18 @@ int SERVO_MIN = 25;   // 0 is the absolute low limit
 int SERVO_MIDDLE = int(SERVO_MAX + SERVO_MIN) / 2;
 int SERVO_DELAY = 500;
 
-void checkResetSpiffsAndWifi();
+void eraseSpiffsAndWifi();
 void startMqtt();
 void checkMqtt();
 int splitTopic(char* topic, char* tokens[], int tokensNumber);
 void callback(char* topic, byte* payload, unsigned int length);
 
+DoubleResetDetector drd(DRD_TIMEOUT, DRD_ADDRESS);
+
 WiFiServer server(80);
 WiFiClient espClient;
 PubSubClient client(espClient);
-bool mqttReady = false;
+bool setupComplete = false;
 
 // Variable to store the HTTP request
 String header;
@@ -55,6 +63,9 @@ char mqtt_port[11] = "1883\0";
 char mqtt_username[20] = "\0";
 char mqtt_password[64] = "\0";
 char mqtt_client[64] = "\0";
+char servo_max_char[5] = "115\0";
+char servo_min_char[5] = "25\0";
+char advanced_servo[7] = "true\0";
 
 // flag for saving data
 bool shouldSaveConfig = false;
@@ -63,20 +74,26 @@ bool shouldSaveConfig = false;
 void saveConfigCallback() {
   Serial.println("Should save config");
   shouldSaveConfig = true;
+  drd.stop();
 }
 
 void setup() {
-  pinMode(RESET_WIFI_PIN, INPUT_PULLUP);
-
   Serial.begin(9600);
+  delay(100);
 
-#ifdef BLINK
+  if (drd.detectDoubleReset()) {
+    Serial.println("Double Reset Detected");
+    eraseSpiffsAndWifi();
+  }
+
   pinMode(LED_BUILTIN, OUTPUT);
-#endif
+  // turn light on board off
+  digitalWrite(LED_BUILTIN, HIGH);
 
-  servo.attach(SERVO_PIN); // attaches the servo on GPIO2 (D4 on a NodeMCU board) to the servo object
-  servo.write(SERVO_MIDDLE); // tell servo to go to degree
-  delay(SERVO_DELAY); // waits n ms for the servo to reach the position
+  servo.attach(SERVO_PIN);    // attaches the servo on GPIO2 (D4 on a NodeMCU
+                              // board) to the servo object
+  servo.write(SERVO_MIDDLE);  // tell servo to go to degree
+  delay(SERVO_DELAY);         // waits n ms for the servo to reach the position
 
   // read configuration from FS json
   Serial.println("mounting FS...");
@@ -104,17 +121,23 @@ void setup() {
           strcpy(mqtt_username, json["mqtt_username"]);
           strcpy(mqtt_password, json["mqtt_password"]);
           strcpy(mqtt_client, json["mqtt_client"]);
+          Serial.print("CONTAINS KEY servo_max: ");
+          Serial.println(json.containsKey("servo_max"));
           if (json.containsKey("servo_max") && strlen(json["servo_max"]) > 0) {
+            strcpy(servo_max_char, json["servo_max"]);
             webServoMax = atoi(json["servo_max"]);
           }
           if (json.containsKey("servo_min") && strlen(json["servo_min"]) > 0) {
+            strcpy(servo_min_char, json["servo_min"]);
             webServoMin = atoi(json["servo_min"]);
           }
-
-          if (strlen(mqtt_client) == 0) {
-            Serial.println("MQTT not set up - Serving servo test page...");
+          strcpy(advanced_servo, json["advanced_servo_config"]);
+          if (strcmp(advanced_servo, "true") == 0) {
+            Serial.println(
+                "User desired advanced servo setup - Serving servo test "
+                "page...");
           } else {
-            mqttReady = true;
+            setupComplete = true;
           }
         } else {
           Serial.println("failed to load json config");
@@ -135,7 +158,15 @@ void setup() {
                                             mqtt_password, 64);
   WiFiManagerParameter custom_mqtt_client("client", "MQTT client", mqtt_client,
                                           64);
+  WiFiManagerParameter custom_servo_max("servo_max", "Servo Max",
+                                        servo_max_char, 5);
+  WiFiManagerParameter custom_servo_min("servo_min", "Servo Min",
+                                        servo_min_char, 5);
 
+  WiFiManagerParameter custom_advanced_servo_config(
+      "advanced_servo_config",
+      "Advanced Servo Config (requires going to ip address of this device)",
+      advanced_servo, 7);
   // WiFiManager
   // Local intialization. Once its business is done, there is no need to keep it
   // around
@@ -154,6 +185,9 @@ void setup() {
   wifiManager.addParameter(&custom_mqtt_username);
   wifiManager.addParameter(&custom_mqtt_password);
   wifiManager.addParameter(&custom_mqtt_client);
+  wifiManager.addParameter(&custom_servo_max);
+  wifiManager.addParameter(&custom_servo_min);
+  wifiManager.addParameter(&custom_advanced_servo_config);
 
   // set minimu quality of signal so it ignores AP's under that quality
   // defaults to 8%
@@ -168,7 +202,7 @@ void setup() {
   // if it does not connect it starts an access point with the specified name
   // here  "AutoConnectAP"
   // and goes into a blocking loop awaiting configuration
-  wifiManager.autoConnect("AutoConnectAP");
+  wifiManager.autoConnect("SmartLightAp");
   // or use this for auto generated name ESP + ChipID
   // wifiManager.autoConnect();
 
@@ -180,6 +214,9 @@ void setup() {
   strcpy(mqtt_username, custom_mqtt_username.getValue());
   strcpy(mqtt_password, custom_mqtt_password.getValue());
   strcpy(mqtt_client, custom_mqtt_client.getValue());
+  strcpy(servo_max_char, custom_servo_max.getValue());
+  strcpy(servo_min_char, custom_servo_min.getValue());
+  strcpy(advanced_servo, custom_advanced_servo_config.getValue());
 
   // save the custom parameters to FS
   if (shouldSaveConfig) {
@@ -192,6 +229,13 @@ void setup() {
     json["mqtt_password"] =
         mqtt_password;                  // Password from Smartnest (or API key)
     json["mqtt_client"] = mqtt_client;  // Device Id from smartnest
+
+    json["servo_max"] = servo_max_char;
+    webServoMax = atoi(json["servo_max"]);
+    json["servo_min"] = servo_min_char;
+    webServoMin = atoi(json["servo_min"]);
+
+    json["advanced_servo_config"] = advanced_servo;
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -207,56 +251,101 @@ void setup() {
   server.begin();
 }
 
+bool hasBlinkedIp = false;
+bool hasPrintedServerReady = false;
+bool showWebSavedInstructions = false;
+
 void loop() {
-  WiFiClient webClient = server.available();  // Listen for incoming clients
+  // setup is complete if the user has set "Advanced Servo Config" to false, or
+  // if they left it true (default) hit "Save" in the servo config page
+  if (!setupComplete) {
+#ifdef BLINK_IP_ADDRESS
+    if (!hasBlinkedIp) {
+      // blink last digits of IP address
+      Serial.println("Blinking last digits of IP address...");
+      delay(1500);
+      String lastDigits = String(WiFi.localIP()[3]);
+      for (int i = 0; i < lastDigits.length(); i++) {
+        int currentDigit = lastDigits.charAt(i) - '0';
+        for (int j = 0; j < currentDigit; j++) {
+          digitalWrite(LED_BUILTIN,
+                       LOW);  // blink the light on the ESP8266 board
+          delay(200);
+          digitalWrite(LED_BUILTIN, HIGH);  // off
+          delay(350);
+        }
+        delay(1500);
+      }
+      hasBlinkedIp = true;
+      Serial.println("Done blinking IP address");
+    }
+#endif
+    if (!hasPrintedServerReady) {
+      Serial.print(
+          "Waiting for client to connect to advanced servo config at ");
+      // https://forum.arduino.cc/t/how-to-manipulate-ipaddress-variables-convert-to-string/222693/15
+      String LocalIP = String() + WiFi.localIP()[0] + "." + WiFi.localIP()[1] +
+                       "." + WiFi.localIP()[2] + "." + WiFi.localIP()[3];
+      Serial.println(LocalIP);
+      hasPrintedServerReady = true;
+    }
 
-  if (webClient) {                  // If a new client connects,
-    Serial.println("New Client.");  // print a message out in the serial port
-    String currentLine =
-        "";  // make a String to hold incoming data from the client
-    while (webClient.connected()) {  // loop while the client's connected
-      if (webClient.available()) {  // if there's bytes to read from the client,
-        char c = webClient.read();  // read a byte, then
-        Serial.write(c);            // print it out the serial monitor
-        header += c;
-        if (c == '\n') {  // if the byte is a newline character
-          // if the current line is blank, you got two newline characters in a
-          // row. that's the end of the client HTTP request, so send a response:
-          if (currentLine.length() == 0) {
-            // HTTP headers always start with a response code (e.g. HTTP/1.1 200
-            // OK) and a content-type so the client knows what's coming, then a
-            // blank line:
-            webClient.println("HTTP/1.1 200 OK");
-            webClient.println("Content-type:text/html");
-            webClient.println("Connection: close");
-            webClient.println();
+    WiFiClient webClient = server.available();  // Listen for incoming clients
+    if (webClient) {                            // If a new client connects,
+      Serial.println("New Client.");  // print a message out in the serial port
+      Serial.print("Web servo max: ");
+      Serial.println(webServoMax);
+      String currentLine =
+          "";  // make a String to hold incoming data from the client
+      while (webClient.connected()) {  // loop while the client's connected
+        if (webClient
+                .available()) {  // if there's bytes to read from the client,
+          char c = webClient.read();  // read a byte, then
+          Serial.write(c);            // print it out the serial monitor
+          header += c;
+          if (c == '\n') {  // if the byte is a newline character
+            // if the current line is blank, you got two newline characters in a
+            // row. that's the end of the client HTTP request, so send a
+            // response:
+            if (currentLine.length() == 0) {
+              // HTTP headers always start with a response code (e.g. HTTP/1.1
+              // 200 OK) and a content-type so the client knows what's coming,
+              // then a blank line:
+              webClient.println("HTTP/1.1 200 OK");
+              webClient.println("Content-type:text/html");
+              webClient.println("Connection: close");
+              webClient.println();
 
-            // test servo
-            if (header.indexOf("GET /output/on/") >= 0) {
-              String saughtHeaderChunk = "GET /output/on/";
-              Serial.println(saughtHeaderChunk.length());
-              String value = header.substring(saughtHeaderChunk.length());
-              Serial.print("Testing servo on: ");
-              Serial.println(value);
-              servo.write(value.toInt());  // tell servo to go to degree
-              delay(SERVO_DELAY);      // waits n ms for the servo to reach the position
-              servo.write(SERVO_MIDDLE);  // tell servo to go to degree
-              delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+              // test servo
+              if (header.indexOf("GET /output/on/") >= 0) {
+                String saughtHeaderChunk = "GET /output/on/";
+                Serial.println(saughtHeaderChunk.length());
+                String value = header.substring(saughtHeaderChunk.length());
+                Serial.print("Testing servo on: ");
+                Serial.println(value);
+                servo.write(value.toInt());  // tell servo to go to degree
+                delay(SERVO_DELAY);  // waits n ms for the servo to reach the
+                                     // position
+                servo.write(SERVO_MIDDLE);  // tell servo to go to degree
+                delay(SERVO_DELAY);  // waits n ms for the servo to reach the
+                                     // position
 
-              webServoMax = value.toInt();
-            } else if (header.indexOf("GET /output/off") >= 0) {
-              String saughtHeaderChunk = "GET /output/off/";
-              Serial.println(saughtHeaderChunk.length());
-              String value = header.substring(saughtHeaderChunk.length());
-              Serial.print("Testing servo off: ");
-              Serial.println(value);
-              servo.write(value.toInt());  // tell servo to go to degree
-              delay(SERVO_DELAY);      // waits n ms for the servo to reach the position
-              servo.write(SERVO_MIDDLE);  // tell servo to go to degree
-              delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+                webServoMax = value.toInt();
+              } else if (header.indexOf("GET /output/off") >= 0) {
+                String saughtHeaderChunk = "GET /output/off/";
+                Serial.println(saughtHeaderChunk.length());
+                String value = header.substring(saughtHeaderChunk.length());
+                Serial.print("Testing servo off: ");
+                Serial.println(value);
+                servo.write(value.toInt());  // tell servo to go to degree
+                delay(SERVO_DELAY);  // waits n ms for the servo to reach the
+                                     // position
+                servo.write(SERVO_MIDDLE);  // tell servo to go to degree
+                delay(SERVO_DELAY);  // waits n ms for the servo to reach the
+                                     // position
 
-              webServoMin = value.toInt();
-            } else if (header.indexOf("GET /output/save") >= 0) {
+                webServoMin = value.toInt();
+              } else if (header.indexOf("GET /output/save") >= 0) {
                 // save the custom parameters to FS
                 Serial.println("saving config");
                 DynamicJsonBuffer jsonBuffer;
@@ -265,11 +354,12 @@ void loop() {
                 json["mqtt_port"] = mqtt_port;
                 json["mqtt_username"] = mqtt_username;
                 json["mqtt_password"] =
-                    mqtt_password;                  // Password from Smartnest (or API key)
+                    mqtt_password;  // Password from Smartnest (or API key)
                 json["mqtt_client"] = mqtt_client;  // Device Id from smartnest
-                
-                json["servo_max"] = webServoMax;
-                json["servo_min"] = webServoMin;
+
+                json["servo_max"] = String(webServoMax);
+                json["servo_min"] = String(webServoMin);
+                json["advanced_servo_config"] = "false";
 
                 File configFile = SPIFFS.open("/config.json", "w");
                 if (!configFile) {
@@ -279,80 +369,105 @@ void loop() {
                 json.printTo(Serial);
                 json.printTo(configFile);
                 configFile.close();
+                showWebSavedInstructions = true;
                 // end save
+              } else if (header.indexOf("GET /output/reset") >= 0) {
+                Serial.println("Reformatting SPIFFS...");
+                SPIFFS.format();
+              }
+
+              // Display the HTML web page
+              webClient.println("<!DOCTYPE html><html>");
+              webClient.println(
+                  "<head><meta name=\"viewport\" content=\"width=device-width, "
+                  "initial-scale=1\">");
+
+              webClient.println("<link rel=\"icon\" href=\"data:,\">");
+              // CSS to style the on/off buttons
+              // Feel free to change the background-color and font-size
+              // attributes to fit your preferences
+              webClient.println(
+                  "<style>html { font-family: Helvetica; display: "
+                  "inline-block; "
+                  "margin: 0px auto; text-align: center;}");
+              webClient.println(
+                  ".button { background-color: #195B6A; border: none; color: "
+                  "white; padding: 16px 40px;");
+              webClient.println(
+                  "text-decoration: none; font-size: 30px; margin: 2px; "
+                  "cursor: "
+                  "pointer;}");
+              webClient.println(
+                  ".button3 {background-color: red;} "
+                  ".button2 {background-color: #77878A;}</style></head>");
+              webClient.println("<html><body>");
+              webClient.println("<h1>Light Switch Servo Adjustment</h1>");
+
+              if (!showWebSavedInstructions) {
+                webClient.print(
+                    "<p><br><label for='servo-max'>Servo Max</label><br><input "
+                    "type='number' name='servo-max' value='");
+                webClient.print(webServoMax);
+                webClient.print(
+                    "'><br><br>"
+                    "<button "
+                    "class=\"button\"  onclick='window.location.href = "
+                    "`/output/on/"
+                    "${document.querySelector(\"[name=\\\"servo-max\\\"]\")."
+                    "value}`'>ON</button></p>"
+                    "<p><br><label for='servo-min'>Servo Min</label><br><input "
+                    "type='number' name='servo-min' value='");
+                webClient.print(webServoMin);
+                webClient.println(
+                    "'><br><br>"
+                    "<button class=\"button "
+                    "button2\" onclick='window.location.href = "
+                    "`/output/off/"
+                    "${document.querySelector(\"[name=\\\"servo-min\\\"]\")."
+                    "value}`'>OFF</button></p>");
+                webClient.println(
+                    "<p><br><br>"
+                    "<button class=\"button "
+                    "button3\" onclick='window.location.href = "
+                    "`/output/save`'>SAVE</button></p>");
+              } else {
+                webClient.println(
+                    "<p><br><br>"
+                    "Settings saved. <br>Reboot the board by pressing the "
+                    "reset button once. <br>Double-press it to remove all "
+                    "settings including WiFi.</p>");
+              }
+
+              webClient.println("</body></html>");
+
+              // The HTTP response ends with another blank line
+              webClient.println();
+              // Break out of the while loop
+              break;
+            } else {  // if you got a newline, then clear currentLine
+              currentLine = "";
             }
-
-            // Display the HTML web page
-            webClient.println("<!DOCTYPE html><html>");
-            webClient.println(
-                "<head><meta name=\"viewport\" content=\"width=device-width, "
-                "initial-scale=1\">");
-            webClient.println("<link rel=\"icon\" href=\"data:,\">");
-            // CSS to style the on/off buttons
-            // Feel free to change the background-color and font-size attributes
-            // to fit your preferences
-            webClient.println(
-                "<style>html { font-family: Helvetica; display: inline-block; "
-                "margin: 0px auto; text-align: center;}");
-            webClient.println(
-                ".button { background-color: #195B6A; border: none; color: "
-                "white; padding: 16px 40px;");
-            webClient.println(
-                "text-decoration: none; font-size: 30px; margin: 2px; cursor: "
-                "pointer;}");
-            webClient.println(
-                ".button3 {background-color: red;} "
-                ".button2 {background-color: #77878A;}</style></head>");
-
-            // Web Page Heading
-            webClient.println("<body><h1>Light Switch Servo Adjustment</h1>");
-
-            webClient.print(
-              "<p><br><label for='servo-max'>Servo Max</label><br><input type='number' name='servo-max' value='");
-              webClient.print(webServoMax);
-              webClient.print(
-                "'><br><br>"
-                "<button "
-                "class=\"button\"  onclick='window.location.href = `/output/on/${document.querySelector(\"[name=\\\"servo-max\\\"]\").value}`'>ON</button></p>"
-              "<p><br><label for='servo-min'>Servo Min</label><br><input type='number' name='servo-min' value='");
-              webClient.print(webServoMin);
-              webClient.println(
-                "'><br><br>"
-                "<button class=\"button "
-                "button2\" onclick='window.location.href = `/output/off/${document.querySelector(\"[name=\\\"servo-min\\\"]\").value}`'>OFF</button></p>");
-              webClient.println(
-                "<p><br><br>"
-                "<button class=\"button "
-                "button3\" onclick='window.location.href = `/output/save`'>SAVE</button></p>");
-            webClient.println("</body></html>");
-
-            // The HTTP response ends with another blank line
-            webClient.println();
-            // Break out of the while loop
-            break;
-          } else {  // if you got a newline, then clear currentLine
-            currentLine = "";
+          } else if (c != '\r') {  // if you got anything else but a carriage
+                                   // return character,
+            currentLine += c;      // add it to the end of the currentLine
           }
-        } else if (c != '\r') {  // if you got anything else but a carriage
-                                 // return character,
-          currentLine += c;      // add it to the end of the currentLine
         }
       }
+      // Clear the header variable
+      header = "";
+      // Close the connection
+      webClient.stop();
+      Serial.println("Client disconnected.");
+      Serial.println("");
     }
-    // Clear the header variable
-    header = "";
-    // Close the connection
-    webClient.stop();
-    Serial.println("Client disconnected.");
-    Serial.println("");
-  }
-
-  if (mqttReady) {
+  } else {
     client.loop();
     checkMqtt();
   }
-
-  checkResetSpiffsAndWifi();
+  // if (digitalRead(RESET_WIFI_PIN) == HIGH) {
+  //   Serial.println("pin is low!?");
+  // }
+  // checkResetSpiffsAndWifi();
 }
 
 void startMqtt() {
@@ -379,9 +494,9 @@ void startMqtt() {
         Serial.print(client.state());
       }
 
-      // check to see if button held down and reset SPIFFS, otherwise retry connecting to MQTT in 30 seconds
+      // check to see if button held down and reset SPIFFS, otherwise retry
+      // connecting to MQTT in 30 seconds
       for (int i = 0; i < 300; i++) {
-        checkResetSpiffsAndWifi();
         delay(100);
       }
     }
@@ -396,18 +511,16 @@ void startMqtt() {
   delay(200);
 }
 
-void checkResetSpiffsAndWifi() {
-  if (digitalRead(RESET_WIFI_PIN) == LOW) {
-    Serial.println("Reseting SPIFFS...");
-    // clean FS, for testing
-    SPIFFS.format();
+void eraseSpiffsAndWifi() {
+  Serial.println("Reformatting SPIFFS...");
+  // clean FS, for testing
+  SPIFFS.format();
 
-    WiFiManager wifiManager;
-    wifiManager.resetSettings();
+  WiFiManager wifiManager;
+  wifiManager.resetSettings();
 
-    Serial.println("Restarting board..");
-    ESP.restart();
-  }
+  Serial.println("Restarting board..");
+  ESP.restart();
 }
 
 int splitTopic(char* topic, char* tokens[], int tokensNumber) {
@@ -455,8 +568,8 @@ void callback(char* topic, byte* payload,
 #ifdef BLINK
       digitalWrite(LED_BUILTIN, LOW);  // blink the light on the ESP8266 board
 #endif
-      servo.write(SERVO_MAX);  // tell servo to go to degree
-      delay(SERVO_DELAY);      // waits n ms for the servo to reach the position
+      servo.write(webServoMax);  // tell servo to go to degree
+      delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
       servo.write(SERVO_MIDDLE);  // tell servo to go to degree
       delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
       client.publish(myTopic, "ON");
@@ -464,8 +577,8 @@ void callback(char* topic, byte* payload,
 #ifdef BLINK
       digitalWrite(LED_BUILTIN, HIGH);
 #endif
-      servo.write(SERVO_MIN);  // tell servo to go to degree
-      delay(SERVO_DELAY);      // waits n ms for the servo to reach the position
+      servo.write(webServoMin);  // tell servo to go to degree
+      delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
       servo.write(SERVO_MIDDLE);  // tell servo to go to degree
       delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
       client.publish(myTopic, "OFF");
