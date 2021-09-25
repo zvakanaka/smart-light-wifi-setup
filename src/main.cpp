@@ -165,7 +165,7 @@ void setup() {
 
   WiFiManagerParameter custom_advanced_servo_config(
       "advanced_servo_config",
-      "Advanced Servo Config (requires going to ip address of this device)",
+      "Advanced Servo Config (requires going to IP address of this device)",
       advanced_servo, 7);
   // WiFiManager
   // Local intialization. Once its business is done, there is no need to keep it
@@ -188,6 +188,22 @@ void setup() {
   wifiManager.addParameter(&custom_servo_max);
   wifiManager.addParameter(&custom_servo_min);
   wifiManager.addParameter(&custom_advanced_servo_config);
+
+  wifiManager.setCustomHeadElement(
+      "<style>"
+      " input { margin-bottom: 1em;} "
+      " label:first-letter { text-transform: uppercase } "
+      "</style>"
+      "<script>"
+      "window.addEventListener('DOMContentLoaded', () => {"
+      "Array.from(document.querySelectorAll('input')).forEach(input => {"
+      "const label = document.createElement('label');"
+      "label.textContent = input.placeholder;"
+      "label.htmlFor = input.id;"
+      "input.parentElement.insertBefore(label, input);"
+      "})"
+      "})"
+      "</script>");
 
   // set minimu quality of signal so it ignores AP's under that quality
   // defaults to 8%
@@ -383,9 +399,6 @@ void loop() {
                   "initial-scale=1\">");
 
               webClient.println("<link rel=\"icon\" href=\"data:,\">");
-              // CSS to style the on/off buttons
-              // Feel free to change the background-color and font-size
-              // attributes to fit your preferences
               webClient.println(
                   "<style>html { font-family: Helvetica; display: "
                   "inline-block; "
@@ -433,8 +446,7 @@ void loop() {
               } else {
                 webClient.println(
                     "<p><br><br>"
-                    "Settings saved. <br>Reboot the board by pressing the "
-                    "reset button once. <br>Double-press it to remove all "
+                    "Settings saved. <br>Reboot by unplugging the board. <br>Double-press the reset button to remove all "
                     "settings including WiFi.</p>");
               }
 
@@ -464,10 +476,6 @@ void loop() {
     client.loop();
     checkMqtt();
   }
-  // if (digitalRead(RESET_WIFI_PIN) == HIGH) {
-  //   Serial.println("pin is low!?");
-  // }
-  // checkResetSpiffsAndWifi();
 }
 
 void startMqtt() {
