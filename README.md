@@ -1,7 +1,7 @@
 # Smart Light Switch Flipper (configure with WiFi portal)
 Configurable MQTT light switch flipper using ESP8266 board and SG90 servo.
 
-Youtube Video:  
+YouTube Video:  
 [![YouTube Video](https://user-images.githubusercontent.com/8365885/134785502-4038ff19-f12d-4d6f-86a2-9883e69f9636.gif)](https://www.youtube.com/watch?v=q2pruaEamRM)
 
 ## Customizable Settings (through web portal)
