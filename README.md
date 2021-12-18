@@ -38,7 +38,8 @@ Pressing "Save" on the web page prevents it from starting up again (until reset)
 > Note: If your ESP8266 is not already flashed, follow instructions [above](#build-and-flash-instructions).
 1) Set up an MQTT account (https://smartnest.cz is a free/easy one)
 2) Connect servo and power
-> Note: Pin 14 (for servo PWM) maps to D5 on the WeMos D1 mini Lite.
+> Note: Pin 14 (for servo PWM) maps to D5 on the WeMos D1 mini Lite,  
+>  and pin 4 maps to D2 for the optional IR receiver data pin.
 3) Use phone to connect to portal's WiFi (temporary WiFi access point that starts if setup hasn't run, WiFi can't connect, or you [reset all settings](#reset-all-settings))
 4) Enter MQTT credentials into portal
 5) If you set "Advanced Servo Config" to 'true', [connect to the web server](#other-customizable-settings-through-web-server) and save after adjusting servos right
