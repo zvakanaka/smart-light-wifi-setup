@@ -23,9 +23,9 @@ Navigate to the IP address of the ESP8266 in a web browser to test and save thes
 - Servo Max (the degree that the servo goes up to when turning light switch on)
 - Servo Min (the degree the servo goes down to when turning light switch off)
 
-> NOTE: You can find the last digits of the IP address by counting the blinks after it starts up (the server won't be ready until it's done blinking).
-
-Pressing "Save" on the web page prevents it from starting up again (until reset).
+> NOTE: For step 6 of [setup instructions](#setup-instructions), you can find the last digits of the IP address by counting the blinks after it starts up (the server won't be ready until it's done blinking).  
+> ![ip](https://user-images.githubusercontent.com/8365885/146628459-af242bb2-2207-43b7-aca4-372a4f542428.gif)  
+> Pressing "Save" on the web page prevents it from starting up again (until reset).
 
 ## Build and Flash Instructions
 1) Set up [PlatformIO](https://platformio.org/platformio-ide)
