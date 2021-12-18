@@ -1,5 +1,5 @@
 # Smart Light Switch Flipper (configure with WiFi portal)
-Configurable MQTT light switch flipper using ESP8266 board and SG90 servo.
+Configurable MQTT light switch flipper using ESP8266 board and SG90 servo (and optional IR remote).
 
 YouTube Video:  
 [![YouTube Video](https://user-images.githubusercontent.com/8365885/134785502-4038ff19-f12d-4d6f-86a2-9883e69f9636.gif)](https://www.youtube.com/watch?v=q2pruaEamRM)
@@ -60,6 +60,7 @@ Libraries
 - [tzapu/WiFiManager@^0.16.0](https://github.com/tzapu/WiFiManager)
 - [knolleary/PubSubClient@^2.8](https://github.com/knolleary/pubsubclient)
 - [datacute/DoubleResetDetector@^1.0.3](https://github.com/datacute/DoubleResetDetector)
+- [crankyoldgit/IRremoteESP8266@^2.8.0](https://github.com/crankyoldgit/IRremoteESP8266)
 
 ## Old project
 This started as [light-switch-servo](https://github.com/zvakanaka/light-switch-servo/), which required manually setting configuration (WiFi credentials, MQTT, servo min/max) in the code. There is also code in there if you want to run this on a Raspberry Pi, use MicroPython on the ESP8266, or use it with an infrared remote.

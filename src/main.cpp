@@ -19,12 +19,18 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <FS.h>  // this needs to be first, or it all crashes and burns...
+#include <IRrecv.h>
+#include <IRremoteESP8266.h>
+#include <IRutils.h>
 #include <PubSubClient.h>
 #include <Servo.h>
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
 
 // #define BLINK
 #define BLINK_IP_ADDRESS
+
+#define IR
+
 // Number of seconds after reset during which a
 // subseqent reset will be considered a double reset.
 #define DRD_TIMEOUT 10
@@ -38,6 +44,15 @@ int SERVO_MAX = 115;  // 180 is the absolute max limit
 int SERVO_MIN = 25;   // 0 is the absolute low limit
 int SERVO_MIDDLE = int(SERVO_MAX + SERVO_MIN) / 2;
 int SERVO_DELAY = 500;
+
+#ifdef IR
+// THANK YOU: https://github.com/crankyoldgit/IRremoteESP8266
+// Note: GPIO 16 won't work on the ESP8266 as it does not have interrupts.
+const uint16_t kRecvPin = 4;  // GPIO4 is labelled D2 on the D1 Mini
+IRrecv irrecv(kRecvPin);
+decode_results results;
+void checkIR();
+#endif
 
 void eraseSpiffsAndWifi();
 void startMqtt();
@@ -80,7 +95,11 @@ void saveConfigCallback() {
 void setup() {
   Serial.begin(9600);
   delay(100);
-
+#ifdef IR
+  irrecv.enableIRIn();  // start the receiver
+  Serial.print("IRrecvDemo is now running and waiting for IR message on Pin ");
+  Serial.println(kRecvPin);
+#endif
   if (drd.detectDoubleReset()) {
     Serial.println("Double Reset Detected");
     eraseSpiffsAndWifi();
@@ -446,7 +465,8 @@ void loop() {
               } else {
                 webClient.println(
                     "<p><br><br>"
-                    "Settings saved. <br>Reboot by unplugging the board. <br>Double-press the reset button to remove all "
+                    "Settings saved. <br>Reboot by unplugging the board. "
+                    "<br>Double-press the reset button to remove all "
                     "settings including WiFi.</p>");
               }
 
@@ -473,6 +493,9 @@ void loop() {
       Serial.println("");
     }
   } else {
+#ifdef IR
+    checkIR();
+#endif
     client.loop();
     checkMqtt();
   }
@@ -591,5 +614,46 @@ void callback(char* topic, byte* payload,
       delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
       client.publish(myTopic, "OFF");
     }
+  }
+}
+
+void checkIR() {
+  // Thank you:
+  // https://github.com/crankyoldgit/IRremoteESP8266/blob/master/examples/IRrecvDemo/IRrecvDemo.ino
+  if (irrecv.decode(&results)) {
+    Serial.print("IR ");
+    Serial.print(results.bits);
+    Serial.print(" bits");
+    Serial.print(": 0x");
+    serialPrintUint64(results.value, HEX);
+    Serial.println("");
+
+    switch (results.value) {
+      case 0xFFA25D:  // generic NEC remote top left
+      case 0xBD0AF5:  // dser up-cup
+      case 0xBDD02F:  // dser up
+      case 0xBDB04F:  // dser OK
+        Serial.println("IR: ON");
+        // uncomment the next line if you want to test using the light on the
+        // board (for off, uncomment the one in the next case too)
+        // digitalWrite(LED_BUILTIN, LOW);
+        servo.write(webServoMax);  // tell servo to go to degree
+        delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+        servo.write(SERVO_MIDDLE);  // tell servo to go to degree
+        delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+        break;
+      case 0xFFE21D:  // generic NEC remote top right
+      case 0xBD807F:  // dser power
+      case 0xBD8A75:  // dser down-cup
+      case 0xBDF00F:  // dser down
+        Serial.println("IR: OFF");
+        // digitalWrite(LED_BUILTIN, HIGH);
+        servo.write(webServoMin);  // tell servo to go to degree
+        delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+        servo.write(SERVO_MIDDLE);  // tell servo to go to degree
+        delay(SERVO_DELAY);  // waits n ms for the servo to reach the position
+        break;
+    }
+    irrecv.resume();
   }
 }
